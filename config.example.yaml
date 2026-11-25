@@ -1,0 +1,139 @@
+# ==============================================================================
+# It's still here — 示例配置文件
+# 复制为 config.yaml 后按需修改:
+#   cp config.example.yaml config.yaml   (或运行 `its-still-here init`)
+# ==============================================================================
+
+# 本地暂存目录：文件检测到后会先暂存到此目录再执行校验上传
+staging_dir: "./staging"
+
+# SQLite 状态数据库路径：记录任务状态、SHA-256 去重与断点重试信息
+db_path: "./data/state.db"
+
+# 失败任务（PENDING_RETRY）的轮询重试间隔（秒）
+retry_interval_seconds: 300
+
+# 单个任务最大重试次数，超过后标记为 FAILED
+max_retries: 15
+
+# ==============================================================================
+# 1. 输入源配置 (sources)
+# ==============================================================================
+sources:
+  # 本地文件夹监听（跨平台可用，基于 watchdog）
+  # 若文件放在 watch_inbox/<子目录>/file.ext，chat_name 会自动识别为 <子目录>；
+  # 根目录下的文件默认 chat_name 为 "default"。
+  - name: "local_inbox"
+    type: "folder"
+    enabled: true
+    watch_dir: "./watch_inbox"
+    stabilize_seconds: 2.0        # 文件大小连续保持不变的稳定等待时间（秒）
+
+  # 微信 PC 客户端监听（仅 Windows，需安装可选依赖 wxauto / wxauto4）
+  # 注意：启用前请确保已在 Windows 桌面登录对应版本的微信客户端
+  - name: "wechat_pc"
+    type: "wechat"
+    enabled: false
+    wechat_version: "4.0"         # 支持 "3.9" (wxauto) 或 "4.0" (wxauto4)
+    listen_chats:
+      - "文件传输助手"
+      - "核心项目群"
+      # - "*"                     # 如需监听所有活跃会话可使用 "*"（视 wxauto 版本支持而定）
+    download_dir: "./wechat_downloads"
+    stabilize_seconds: 2.0
+
+# ==============================================================================
+# 2. 远程存储后端配置 (storages)
+# 代理设置仅对当前存储生效，绝不污染全局环境变量或其它数据源
+# ==============================================================================
+storages:
+  # Google Drive（通过 rclone 驱动，独立启用本地代理）
+  - name: "google_drive"
+    type: "rclone"
+    enabled: true
+    remote_name: "gdrive"         # 需先通过 `rclone config` 配置名为 gdrive 的 remote
+    root_path: "ItIsStillHere"    # 远端根路径
+    chunk_size: "64M"             # rclone 分片大小（--drive-chunk-size）
+    retries: 10                   # 单次上传内部重试次数
+    tpslimit: 8                   # 每秒事务速率上限，避免触发 API 限流
+    proxy:
+      enabled: true
+      url: "http://127.0.0.1:7890" # 仅注入此 rclone 子进程环境（HTTP_PROXY/HTTPS_PROXY/ALL_PROXY）
+
+  # OneDrive（通过 rclone 驱动，直连不走代理）
+  - name: "onedrive"
+    type: "rclone"
+    enabled: true
+    remote_name: "onedrive"       # 需先通过 `rclone config` 配置名为 onedrive 的 remote
+    root_path: "ItIsStillHere"
+    chunk_size: "64M"
+    retries: 10
+    tpslimit: 8
+    proxy:
+      enabled: false
+      url: null
+
+  # 国内网盘（百度网盘 / 夸克网盘，通过 AList WebDAV 网关流式上传，直连）
+  - name: "alist_domestic"
+    type: "webdav"
+    enabled: true
+    base_url: "http://127.0.0.1:5244/dav/百度网盘"  # AList WebDAV 挂载路径（可改为 /dav/夸克网盘 等）
+    username: "admin"             # AList 用户名（如开启匿名/无需鉴权可留空或设为 null）
+    password: "your-alist-password"
+    root_path: "ItIsStillHere"
+    retries: 10
+    proxy:
+      enabled: false
+      url: null
+
+# ==============================================================================
+# 3. 路由规则配置 (rules)
+# 按声明顺序依次评估，所有匹配成功的规则都会触发对应转存任务
+# 支持的 path_template 占位符：
+#   {source}, {chat_name}, {sender}, {filename}, {stem}, {ext},
+#   {YYYY}, {MM}, {DD}, {HH}, {mm}, {ss}
+# ==============================================================================
+rules:
+  # 规则一：核心项目群文件 -> 备份至 Google Drive（保留本地或上传校验后清理）
+  - name: "core_project_to_gdrive"
+    enabled: true
+    sources: []                   # 空列表表示匹配所有已启用的输入源
+    include_chats:
+      - "核心项目群"
+    exclude_chats: []
+    include_exts: []
+    exclude_exts: []
+    min_size_mb: 0.0
+    max_size_mb: null             # null 表示不限制最大体积
+    target: "google_drive"
+    path_template: "{source}/{chat_name}/{YYYY}-{MM}/{filename}"
+    mode: "move"                  # "move": 上传并校验通过后清理本地暂存；"copy": 保留本地副本
+
+  # 规则二：超过 100MB 的大文件 -> 分流至国内网盘（AList WebDAV 流式传输，高速直连）
+  - name: "large_files_to_alist"
+    enabled: true
+    sources: []
+    include_chats: []
+    exclude_chats: []
+    include_exts: []
+    exclude_exts: []
+    min_size_mb: 100.0
+    max_size_mb: null
+    target: "alist_domestic"
+    path_template: "LargeFiles/{YYYY}-{MM}/{chat_name}/{filename}"
+    mode: "move"
+
+  # 规则三：PDF 文档（100MB 以内）-> 同步归档到 Google Drive
+  - name: "pdfs_to_gdrive"
+    enabled: true
+    sources: []
+    include_chats: []
+    exclude_chats: []
+    include_exts:
+      - ".pdf"
+    exclude_exts: []
+    min_size_mb: 0.0
+    max_size_mb: 100.0
+    target: "google_drive"
+    path_template: "Documents/{YYYY}/{MM}/{chat_name}/{filename}"
+    mode: "move"

@@ -1,0 +1,20 @@
+.venv/
+venv/
+.cache/
+__pycache__/
+*.pyc
+data/
+staging/
+config.yaml
+.pytest_cache/
+dist/
+build/
+*.egg-info/
+
+# Local multi-agent workspace metadata
+.codebuddy/
+.trae/
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+HANDOFF.md
